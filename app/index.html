@@ -1,252 +1,66 @@
 <!doctype html>
 <html lang="en">
 <head>
-  <meta charset="utf-8">
-
-  <meta
-    name="viewport"
-    content="width=1920,height=1080,initial-scale=1,maximum-scale=1,user-scalable=no"
-  >
-
-  <title>IPTV Player</title>
-
-  <link rel="stylesheet" href="css/style.css">
+<meta charset="utf-8">
+<meta name="viewport" content="width=1920,height=1080,initial-scale=1,maximum-scale=1,user-scalable=no">
+<title>TizenTivi</title>
+<link rel="stylesheet" href="css/style.css">
 </head>
-
 <body>
-
 <div id="app">
+  <header class="topbar">
+    <div class="brand"><span class="brand-dot"></span><span>TizenTivi</span></div>
+    <div id="playlistName" class="playlist-chip">No playlist</div>
+    <div class="top-spacer"></div>
+    <button id="searchBtn" class="top-action" data-action="search">SEARCH</button>
+    <button id="settingsBtn" class="top-action" data-action="settings">SETTINGS</button>
+  </header>
 
-  <!-- =====================================================
-       MAIN PLAYER
-       ===================================================== -->
-
-  <section id="playerScreen" class="player-screen">
-
-    <video
-      id="video"
-      class="video"
-      autoplay
-      playsinline
-      preload="auto"
-    ></video>
-
-    <div class="video-overlay"></div>
-
-    <!-- Top information -->
-    <header class="topbar">
-
-      <div class="brand">
-        <span class="brand-main">IPTV</span>
-        <span class="brand-light">PLAYER</span>
-      </div>
-
-      <div class="top-info">
-
-        <div id="playlistName" class="playlist-name">
-          No playlist
+  <main class="layout">
+    <aside id="sidebar" class="sidebar"></aside>
+    <section class="content">
+      <div class="player">
+        <video id="video" playsinline preload="none"></video>
+        <div id="videoEmpty" class="video-empty">
+          <div class="video-icon">▶</div>
+          <div id="playerStatus">Choose a channel</div>
+          <div id="nowTitle" class="now-title">No channel selected</div>
+          <div id="nowProgram" class="now-program">Use the remote to browse your playlist</div>
         </div>
-
-        <div id="playerStatus" class="player-status">
-          Ready
-        </div>
-
-      </div>
-
-    </header>
-
-
-    <!-- Current channel information -->
-    <section class="now-playing">
-
-      <div id="nowLogo" class="now-logo"></div>
-
-      <div class="now-info">
-
-        <div class="now-label">
-          NOW PLAYING
-        </div>
-
-        <div id="nowTitle" class="now-title">
-          Select a channel
-        </div>
-
-        <div id="nowProgram" class="now-program">
-          Choose a channel to start watching
-        </div>
-
-      </div>
-
-    </section>
-
-
-    <!-- EPG -->
-    <section id="epgBar" class="epg hidden">
-
-      <div class="epg-heading">
-        <span class="epg-dot"></span>
-        NOW
-      </div>
-
-      <div class="epg-content">
-
-        <div id="epgTitle" class="epg-title">
-          Programme
-        </div>
-
-        <div id="epgTimes" class="epg-times"></div>
-
-        <div id="epgDesc" class="epg-desc"></div>
-
-      </div>
-
-    </section>
-
-
-    <!-- Main TV interface -->
-    <main class="content">
-
-      <!-- Sidebar -->
-      <aside id="sidebar" class="sidebar">
-
-        <div class="sidebar-header">
-          <div class="sidebar-title">
-            LIVE TV
-          </div>
-
-          <div class="sidebar-subtitle">
-            Categories
-          </div>
-        </div>
-
-        <div id="sidebarList" class="sidebar-list"></div>
-
-        <div class="sidebar-footer">
-          <div class="remote-hint">
-            <span>◀</span>
-            Categories
-          </div>
-        </div>
-
-      </aside>
-
-
-      <!-- Channel area -->
-      <section class="channels-area">
-
-        <div class="channels-header">
-
+        <div class="player-overlay">
           <div>
-
-            <div id="categoryTitle" class="category-title">
-              All Channels
-            </div>
-
-            <div id="channelCount" class="channel-count">
-              0 channels
-            </div>
-
+            <div id="nowSideTitle" class="player-title">No channel</div>
+            <div id="nowSideGroup" class="player-sub">—</div>
           </div>
-
-          <div class="quick-actions">
-
-            <div
-              id="searchBtn"
-              class="quick-action"
-            >
-              <span class="action-key">YELLOW</span>
-              Search
-            </div>
-
-            <div
-              id="settingsBtn"
-              class="quick-action"
-            >
-              <span class="action-key">GREEN</span>
-              Settings
-            </div>
-
-          </div>
-
+          <div id="playerBadge" class="player-badge">READY</div>
         </div>
-
-
-        <div
-          id="channelGrid"
-          class="channel-grid"
-        ></div>
-
-      </section>
-
-    </main>
-
-
-    <!-- Bottom remote guide -->
-    <footer class="remote-bar">
-
-      <div class="remote-item">
-        <span class="remote-key">↑ ↓</span>
-        Navigate
       </div>
 
-      <div class="remote-item">
-        <span class="remote-key">OK</span>
-        Select
+      <div class="section-head">
+        <div>
+          <div id="categoryTitle" class="section-title">All Channels</div>
+          <div id="channelCount" class="section-count">0 channels</div>
+        </div>
+        <div class="remote-help">◀ Sidebar &nbsp; ▲▼ Browse &nbsp; OK Play &nbsp; BACK Menu</div>
       </div>
 
-      <div class="remote-item">
-        <span class="remote-key">BACK</span>
-        Menu
+      <div id="channelGrid" class="channel-grid">
+        <div id="gridEmpty" class="empty-state">Add a playlist in Settings</div>
       </div>
 
-      <div class="remote-item">
-        <span class="remote-key red"></span>
-        Favourite
+      <div id="epgBar" class="epg-bar">
+        <div>
+          <div id="epgTitle" class="epg-title">EPG</div>
+          <div id="epgDesc" class="epg-desc">No programme information</div>
+        </div>
+        <div id="epgTimes" class="epg-times"></div>
       </div>
-
-      <div class="remote-item">
-        <span class="remote-key green"></span>
-        Settings
-      </div>
-
-      <div class="remote-item">
-        <span class="remote-key yellow"></span>
-        Search
-      </div>
-
-      <div class="remote-item">
-        <span class="remote-key blue"></span>
-        Refresh
-      </div>
-
-    </footer>
-
-  </section>
-
-
-  <!-- =====================================================
-       MODAL
-       ===================================================== -->
-
-  <div
-    id="modalRoot"
-    class="modal-root hidden"
-  ></div>
-
-
-  <!-- =====================================================
-       TOAST
-       ===================================================== -->
-
-  <div
-    id="toast"
-    class="toast"
-  ></div>
-
+    </section>
+  </main>
 </div>
 
-
+<div id="modalRoot" class="modal-root hidden"></div>
+<div id="toast" class="toast"></div>
 <script src="js/app.js"></script>
-
 </body>
 </html>
