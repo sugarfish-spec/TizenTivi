@@ -1,0 +1,54 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=1920,height=1080,initial-scale=1,maximum-scale=1,user-scalable=no">
+<title>IPTV Player</title>
+<link rel="stylesheet" href="css/style.css">
+</head>
+<body>
+<div id="app">
+  <header class="topbar">
+    <div class="brand">IPTV<span>PLAYER</span></div>
+    <div id="playlistName" class="playlist-name">No playlist</div>
+    <div class="top-actions">
+      <button id="searchBtn" class="icon-btn" data-action="search">⌕</button>
+      <button id="settingsBtn" class="icon-btn" data-action="settings">⚙</button>
+    </div>
+  </header>
+
+  <main class="layout">
+    <aside id="sidebar" class="sidebar" aria-label="Categories"></aside>
+    <section class="content">
+      <div id="contentHeader" class="content-header">
+        <div>
+          <h1 id="categoryTitle">All Channels</h1>
+          <div id="channelCount" class="muted">0 channels</div>
+        </div>
+        <div class="hint">OK Play · ← Categories · BACK Close</div>
+      </div>
+      <div id="channelGrid" class="channel-grid"></div>
+    </section>
+    <section id="playerPane" class="player-pane">
+      <video id="video" playsinline></video>
+      <div id="playerOverlay" class="player-overlay">
+        <div id="nowLogo" class="now-logo"></div>
+        <div id="nowTitle">Select a channel</div>
+        <div id="nowProgram" class="now-program"></div>
+        <div class="player-status" id="playerStatus">Ready</div>
+      </div>
+      <div id="epgBar" class="epg-bar hidden">
+        <div id="epgTitle"></div>
+        <div id="epgTimes"></div>
+        <div id="epgDesc"></div>
+      </div>
+    </section>
+  </main>
+</div>
+
+<div id="modalRoot" class="modal-root hidden"></div>
+<div id="toast" class="toast"></div>
+
+<script src="js/app.js"></script>
+</body>
+</html>
