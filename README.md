@@ -1,17 +1,18 @@
-# TizenTivi
+# TizenTivi v1.4.0
 
-TizenBrew IPTV player module supporting Xtream Codes, M3U/M3U8 playlists, favourites and XMLTV/Xtream EPG.
+TizenBrew IPTV application module. This is not a native WGT.
 
-This remains a TizenBrew web application module, not a native `.wgt`.
+## Remote rebuild
 
-## Remote
+Samsung mandatory keys are intentionally NOT registered in package.json:
+ArrowLeft, ArrowUp, ArrowRight, ArrowDown, Enter and Back.
 
-Arrow keys, Enter and Back are handled by the page. TizenBrew registers only the extra media keys in `package.json`.
+The module listens for `keydown` at window, document and body in capture mode. A visible diagnostic line reports every received key and keyCode. The selected control gets a bright outline.
 
-## Scale
+The channel renderer only keeps a small window of channel cards in the DOM, so large playlists do not create tens of thousands of DOM nodes.
 
-The channel list uses windowed rendering: only a small number of channel cards are kept in the DOM while the selected index can move through tens of thousands of channels. This is important for Samsung TV browser performance.
+## First test
 
-## Notes
+When the module launches, SETTINGS is selected. Press LEFT and RIGHT. The white outline must move and the diagnostic line must change. Press DOWN and continue with the D-pad. Press OK on SETTINGS to open the test settings screen.
 
-Playback is HTML5 video in TizenBrew. Codec/container, provider headers, CORS and DRM support depend on the TV/browser and stream.
+Samsung documents Arrow/Enter/Back as automatically detected keys and recommends handling them from keydown; registered keys are only needed for additional keys. See Samsung Remote Control documentation.

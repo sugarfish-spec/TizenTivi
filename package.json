@@ -1,25 +1,17 @@
 {
-  "name": "tivimate-style-iptv-tizenbrew",
-  "version": "1.0.6",
-  "description": "Remote-first IPTV player for TizenBrew with Xtream Codes, M3U/M3U8 and XMLTV EPG support.",
+  "name": "TizenTivi",
+  "version": "1.4.0",
+  "type": "module",
+  "description": "Remote-first IPTV player for TizenBrew",
   "packageType": "app",
   "appName": "TizenTivi",
   "appPath": "app/index.html",
-  "main": "app/index.html",
-  "keys": [
-    "MediaPlay",
-    "MediaPause",
-    "MediaPlayPause",
-    "MediaStop",
-    "MediaFastForward",
-    "MediaRewind",
-    "MediaTrackPrevious",
-    "MediaTrackNext"
-  ],
   "evaluateScriptOnDocumentStart": false,
-  "files": [
-    "app",
-    "README.md",
-    "LICENSE"
-  ]
+  "keys": [
+    "MediaPlay", "MediaPause", "MediaPlayPause", "MediaStop",
+    "MediaFastForward", "MediaRewind", "MediaTrackPrevious", "MediaTrackNext",
+    "ColorF0Red", "ColorF1Green", "ColorF2Yellow", "ColorF3Blue",
+    "ChannelUp", "ChannelDown"
+  ],
+  "files": ["app", "README.md", "LICENSE"]
 }
