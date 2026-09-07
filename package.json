@@ -1,6 +1,6 @@
 {
   "name": "tivimate-style-iptv-tizenbrew",
-  "version": "1.0.4",
+  "version": "1.0.5",
   "description": "Remote-first IPTV player for TizenBrew with Xtream Codes, M3U/M3U8 and XMLTV EPG support.",
   "packageType": "app",
   "appName": "TizenTivi",
