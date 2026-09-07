@@ -1,6 +1,6 @@
 {
   "name": "TizenTivi",
-  "version": "1.7.0",
+  "version": "1.8.0",
   "type": "module",
   "description": "Remote-first IPTV player for TizenBrew with Xtream Codes, M3U/M3U8 and XMLTV EPG support.",
   "packageType": "app",

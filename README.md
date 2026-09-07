@@ -1,13 +1,11 @@
-# TizenTivi v1.7.0
+# TizenTivi v1.8.0
 
-TizenBrew IPTV application module.
+TizenBrew IPTV module.
 
-## v1.7 fixes
-- Main TV interface is locked to the viewport; the browser/page cannot scroll.
-- Video player and category sidebar remain fixed.
-- Channel grid is a fixed viewport with virtualized/windowed channel rendering.
-- D-pad navigation advances through every channel row without moving the page.
-- Removed `scrollIntoView()` from remote focus handling because it could scroll the parent TV layout.
-- Preserves v1.6 streaming, Xtream Codes, M3U/M3U8, search, favourites and fullscreen functionality.
-
-This is a TizenBrew module, not a native Samsung `.wgt` application.
+## v1.8 fixes
+- Fixed Xtream/M3U settings getting stuck on the first input field.
+- Samsung IME input is allowed to handle arrow/Enter events while a text field is active.
+- Handles Samsung IME Done/Cancel key codes and advances to the next settings field after Done.
+- SAVE & LOAD is reachable after completing Xtream server, username and password fields.
+- Preserves v1.7 fixed viewport/channel-grid navigation.
+- Preserves M3U, Xtream Codes, search, favourites, fullscreen and streaming.
