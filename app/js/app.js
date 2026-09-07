@@ -1,834 +1,2513 @@
-(function () {
-    'use strict';
+(function(){
+'use strict';
 
-    /*
-     * ============================================================
-     * TIZENBREW / SAMSUNG REMOTE DIAGNOSTIC
-     * ============================================================
-     *
-     * This file intentionally does NOT load the IPTV application.
-     *
-     * Its only job is to determine whether the Samsung remote
-     * events are reaching the TizenBrew web application.
-     *
-     * Test:
-     *   UP
-     *   DOWN
-     *   LEFT
-     *   RIGHT
-     *   ENTER / OK
-     *   BACK
-     *   0-9
-     *   CHANNEL UP / DOWN
-     *   MEDIA buttons
-     *   RED / GREEN / YELLOW / BLUE
-     *
-     * ============================================================
-     */
+const STORE='iptv_tizenbrew_v1';
 
-    var lastEvent = {
-        type: 'NONE',
-        key: '-',
-        keyCode: '-',
-        which: '-',
-        keyName: '-',
-        time: '-'
-    };
+const DEFAULT={
+  playlists:[],
+  favorites:[],
+  selectedPlaylist:null,
+  selectedGroup:'__all',
+  autoPlaylistRefresh:360,
+  autoEpgRefresh:360,
+  settings:{autoplay:true}
+};
 
-    var eventCount = 0;
-    var keyDownCount = 0;
-    var hardwareCount = 0;
+let state=load();
+let channels=[];
+let groups=[];
+let filtered=[];
+let focusIndex=0;
+let sidebarIndex=0;
+let sidebarOpen=true;
 
-    var registeredKeys = [];
-    var tizenAvailable = false;
-    var tvInputAvailable = false;
+let epg={byId:{},last:0};
+let currentChannel=null;
+let refreshTimer=null;
+let epgTimer=null;
+let searchResults=[];
 
-    var startTime = Date.now();
+/*
+ * Prevent a Samsung/Tizen Back event from being processed
+ * twice when both keydown and tizenhwkey are emitted.
+ */
+let lastRemoteKey='';
+let lastRemoteTime=0;
 
-    /*
-     * ------------------------------------------------------------
-     * KEY CODE MAP
-     * ------------------------------------------------------------
-     */
+function $(id){
+  return document.getElementById(id);
+}
 
-    var KEY_CODES = {
-        13: 'Enter',
+function load(){
+  try{
+    var saved=JSON.parse(
+      localStorage.getItem(STORE)||'null'
+    );
 
-        37: 'ArrowLeft',
-        38: 'ArrowUp',
-        39: 'ArrowRight',
-        40: 'ArrowDown',
+    return Object.assign(
+      {},
+      DEFAULT,
+      saved||{}
+    );
+  }catch(e){
+    return Object.assign(
+      {},
+      DEFAULT
+    );
+  }
+}
 
-        27: 'Escape',
-        10009: 'Back',
-        10182: 'Exit',
+function save(){
+  localStorage.setItem(
+    STORE,
+    JSON.stringify(state)
+  );
+}
 
-        48: '0',
-        49: '1',
-        50: '2',
-        51: '3',
-        52: '4',
-        53: '5',
-        54: '6',
-        55: '7',
-        56: '8',
-        57: '9',
+function toast(s){
+  const t=$('toast');
 
-        415: 'MediaPlay',
-        19: 'MediaPause',
-        10252: 'MediaPlayPause',
-        413: 'MediaStop',
+  if(!t)return;
 
-        412: 'MediaRewind',
-        417: 'MediaFastForward',
+  t.textContent=s;
+  t.classList.add('show');
 
-        10232: 'MediaTrackPrevious',
-        10233: 'MediaTrackNext',
+  clearTimeout(toast._t);
 
-        427: 'ChannelUp',
-        428: 'ChannelDown',
+  toast._t=setTimeout(
+    ()=>t.classList.remove('show'),
+    2600
+  );
+}
 
-        403: 'ColorF0Red',
-        404: 'ColorF1Green',
-        405: 'ColorF2Yellow',
-        406: 'ColorF3Blue',
+function esc(s){
+  return String(s||'').replace(
+    /[&<>"']/g,
+    m=>({
+      '&':'&amp;',
+      '<':'&lt;',
+      '>':'&gt;',
+      '"':'&quot;',
+      "'":'&#39;'
+    }[m])
+  );
+}
 
-        18: 'Menu',
-        457: 'Info',
-        10072: 'Source',
-        458: 'Guide',
-        10225: 'Search',
+function normUrl(u){
+  return String(u||'')
+    .trim()
+    .replace(/&amp;/g,'&');
+}
 
-        447: 'VolumeUp',
-        448: 'VolumeDown',
-        449: 'VolumeMute'
-    };
+function favKey(c){
+  return (
+    c.uid||
+    c.url||
+    c.name
+  ).toString();
+}
 
-    /*
-     * ------------------------------------------------------------
-     * HELPERS
-     * ------------------------------------------------------------
-     */
+function isFav(c){
+  return state.favorites.indexOf(
+    favKey(c)
+  )>=0;
+}
 
-    function codeToName(code) {
-        code = Number(code || 0);
+function toggleFav(c){
+  const k=favKey(c);
+  const i=state.favorites.indexOf(k);
 
-        if (KEY_CODES[code]) {
-            return KEY_CODES[code];
-        }
+  if(i<0){
+    state.favorites.push(k);
+  }else{
+    state.favorites.splice(i,1);
+  }
 
-        return '-';
+  save();
+  render();
+}
+
+function parseAttrs(line){
+  const o={};
+  const re=/([\w-]+)="([^"]*)"/g;
+  let m;
+
+  while((m=re.exec(line))){
+    o[m[1].toLowerCase()]=m[2];
+  }
+
+  return o;
+}
+
+function parseM3U(text,base){
+  const out=[];
+  const lines=
+    text
+      .replace(/^\uFEFF/,'')
+      .split(/\r?\n/);
+
+  let meta=null;
+  let pendingOpt={};
+
+  for(let i=0;i<lines.length;i++){
+    const line=lines[i].trim();
+
+    if(!line)continue;
+
+    if(line.startsWith('#EXTVLCOPT:')){
+      const p=
+        line
+          .slice(12)
+          .split('=');
+
+      pendingOpt[p.shift()]=
+        p.join('=');
+
+      continue;
     }
 
-    function safeString(value) {
-        if (value === null || typeof value === 'undefined') {
-            return '-';
-        }
+    if(line.startsWith('#EXTINF:')){
+      const comma=line.indexOf(',');
 
-        return String(value);
+      const head=
+        comma>=0
+          ?line.slice(0,comma)
+          :line;
+
+      const name=
+        comma>=0
+          ?line.slice(comma+1).trim()
+          :'Channel';
+
+      const attrs=parseAttrs(head);
+
+      meta={
+        name,
+        group:
+          attrs['group-title']||
+          attrs['group']||
+          'Uncategorised',
+
+        logo:
+          attrs['tvg-logo']||'',
+
+        tvgId:
+          attrs['tvg-id']||'',
+
+        tvgName:
+          attrs['tvg-name']||'',
+
+        lang:
+          attrs['tvg-language']||'',
+
+        country:
+          attrs['tvg-country']||'',
+
+        pending:{
+          ...pendingOpt
+        }
+      };
+
+      pendingOpt={};
+
+      continue;
     }
 
-    function nowTime() {
-        var d = new Date();
+    if(
+      !line.startsWith('#')&&
+      meta
+    ){
+      let url=line;
 
-        function pad(n) {
-            return n < 10 ? '0' + n : String(n);
+      let ua=
+        meta.pending['http-user-agent']||
+        '';
+
+      if(url.indexOf('|')>=0){
+        const p=url.split('|');
+
+        url=p.shift();
+
+        const q=p.join('|');
+
+        const mm=
+          q.match(
+            /User-Agent=([^&]+)/i
+          );
+
+        if(mm){
+          ua=
+            decodeURIComponent(
+              mm[1]
+            );
         }
+      }
 
-        return (
-            pad(d.getHours()) +
-            ':' +
-            pad(d.getMinutes()) +
-            ':' +
-            pad(d.getSeconds())
+      out.push({
+        uid:
+          (meta.tvgId||meta.name)+
+          '|'+
+          url,
+
+        name:meta.name,
+        group:meta.group,
+        logo:meta.logo,
+        tvgId:meta.tvgId,
+        tvgName:meta.tvgName,
+        url:normUrl(url),
+        ua
+      });
+
+      meta=null;
+    }
+  }
+
+  return out;
+}
+
+function groupsFor(list){
+  const m=new Map();
+
+  list.forEach(c=>{
+    if(!m.has(c.group)){
+      m.set(c.group,0);
+    }
+
+    m.set(
+      c.group,
+      m.get(c.group)+1
+    );
+  });
+
+  return [...m.entries()]
+    .sort(
+      (a,b)=>
+        a[0].localeCompare(b[0])
+    );
+}
+
+async function fetchText(url){
+  const r=
+    await fetch(
+      url,
+      {cache:'no-store'}
+    );
+
+  if(!r.ok){
+    throw new Error(
+      'HTTP '+r.status
+    );
+  }
+
+  return r.text();
+}
+
+async function fetchJson(url){
+  const r=
+    await fetch(
+      url,
+      {cache:'no-store'}
+    );
+
+  if(!r.ok){
+    throw new Error(
+      'HTTP '+r.status
+    );
+  }
+
+  return r.json();
+}
+
+function xtreamBase(s){
+  return normUrl(s)
+    .replace(/\/+$/,'');
+}
+
+function xtreamUrl(
+  base,
+  user,
+  pass,
+  action,
+  extra=''
+){
+  return (
+    xtreamBase(base)+
+    '/player_api.php?username='+
+    encodeURIComponent(user)+
+    '&password='+
+    encodeURIComponent(pass)+
+    '&action='+
+    action+
+    (
+      extra
+        ?'&'+extra
+        :''
+    )
+  );
+}
+
+async function loadXtream(p){
+  const base=xtreamBase(p.server);
+
+  const u=
+    encodeURIComponent(
+      p.username
+    );
+
+  const pw=
+    encodeURIComponent(
+      p.password
+    );
+
+  const api=
+    base+
+    '/player_api.php?username='+
+    u+
+    '&password='+
+    pw;
+
+  const info=
+    await fetchJson(api);
+
+  if(
+    info.user_info&&
+    String(
+      info.user_info.auth
+    )==='0'
+  ){
+    throw new Error(
+      'Xtream login rejected'
+    );
+  }
+
+  const cats=
+    await fetchJson(
+      xtreamUrl(
+        base,
+        p.username,
+        p.password,
+        'get_live_categories'
+      )
+    );
+
+  const streams=
+    await fetchJson(
+      xtreamUrl(
+        base,
+        p.username,
+        p.password,
+        'get_live_streams'
+      )
+    );
+
+  const catMap={};
+
+  (cats||[]).forEach(c=>{
+    catMap[
+      String(c.category_id)
+    ]=
+      c.category_name||
+      'Uncategorised';
+  });
+
+  return (streams||[]).map(x=>({
+    uid:
+      'xtream:'+
+      x.stream_id,
+
+    name:
+      x.name||
+      'Channel',
+
+    group:
+      catMap[
+        String(x.category_id)
+      ]||
+      'Uncategorised',
+
+    logo:
+      x.stream_icon||
+      '',
+
+    tvgId:
+      x.epg_channel_id||
+      '',
+
+    tvgName:
+      x.epg_channel_id||
+      '',
+
+    url:
+      base+
+      '/live/'+
+      encodeURIComponent(
+        p.username
+      )+
+      '/'+
+      encodeURIComponent(
+        p.password
+      )+
+      '/'+
+      x.stream_id+
+      '.ts',
+
+    xtream:{
+      base,
+      user:p.username,
+      pass:p.password,
+      id:x.stream_id,
+      epg:
+        x.epg_channel_id||
+        ''
+    }
+  }));
+}
+
+async function loadPlaylist(p){
+  if(p.type==='xtream'){
+    return loadXtream(p);
+  }
+
+  const text=
+    await fetchText(p.url);
+
+  return parseM3U(
+    text,
+    p.url
+  );
+}
+
+async function refreshPlaylist(
+  p,
+  quiet
+){
+  if(!p)return;
+
+  try{
+    channels=
+      await loadPlaylist(p);
+
+    p.lastRefresh=
+      Date.now();
+
+    save();
+
+    groups=
+      groupsFor(channels);
+
+    if(
+      state.selectedGroup==='__all'||
+      state.selectedGroup==='__fav'||
+      !groups.some(
+        x=>x[0]===state.selectedGroup
+      )
+    ){
+      state.selectedGroup='__all';
+    }
+
+    render();
+
+    if(!quiet){
+      toast(
+        'Playlist refreshed · '+
+        channels.length+
+        ' channels'
+      );
+    }
+  }catch(e){
+    toast(
+      'Playlist refresh failed: '+
+      e.message
+    );
+  }
+}
+
+function applyFilter(){
+  if(
+    state.selectedGroup===
+    '__fav'
+  ){
+    filtered=
+      channels.filter(
+        isFav
+      );
+  }else if(
+    state.selectedGroup===
+    '__all'
+  ){
+    filtered=channels;
+  }else{
+    filtered=
+      channels.filter(
+        c=>
+          c.group===
+          state.selectedGroup
+      );
+  }
+
+  filtered=
+    filtered
+      .slice()
+      .sort(
+        (a,b)=>
+          a.name.localeCompare(
+            b.name
+          )
+      );
+
+  focusIndex=
+    Math.max(
+      0,
+      Math.min(
+        focusIndex,
+        Math.max(
+          0,
+          filtered.length-1
+        )
+      )
+    );
+}
+
+function renderSidebar(){
+  const favCount=
+    channels.filter(
+      isFav
+    ).length;
+
+  let h=
+    '<div class="side-item '+
+    (
+      state.selectedGroup===
+      '__all'
+        ?'active'
+        :''
+    )+
+    '" data-side="__all">'+
+    'All Channels '+
+    '<span class="count">'+
+    channels.length+
+    '</span></div>';
+
+  h+=
+    '<div class="side-item '+
+    (
+      state.selectedGroup===
+      '__fav'
+        ?'active'
+        :''
+    )+
+    '" data-side="__fav">'+
+    '★ Favourites '+
+    '<span class="count">'+
+    favCount+
+    '</span></div>';
+
+  groups.forEach(
+    ([g,n])=>{
+      h+=
+        '<div class="side-item '+
+        (
+          state.selectedGroup===
+          g
+            ?'active'
+            :''
+        )+
+        '" data-side="'+
+        esc(g)+
+        '">'+
+        esc(g)+
+        ' <span class="count">'+
+        n+
+        '</span></div>';
+    }
+  );
+
+  $('sidebar').innerHTML=h;
+
+  [
+    ...$('sidebar')
+      .querySelectorAll(
+        '.side-item'
+      )
+  ].forEach(
+    (el,i)=>{
+      el.tabIndex=0;
+
+      el.onclick=()=>{
+        state.selectedGroup=
+          el.dataset.side;
+
+        sidebarIndex=i;
+        focusIndex=0;
+
+        save();
+        render();
+
+        /*
+         * Keep the remote focus on the selected
+         * sidebar item after render().
+         */
+        setTimeout(
+          focusSidebar,
+          0
         );
+      };
     }
+  );
+}
 
-    /*
-     * ------------------------------------------------------------
-     * BUILD DIAGNOSTIC SCREEN
-     * ------------------------------------------------------------
-     */
+function render(){
+  applyFilter();
+  renderSidebar();
 
-    function createScreen() {
-        document.body.innerHTML = '';
+  $('playlistName').textContent=
+    state.playlists.find(
+      p=>
+        p.id===
+        state.selectedPlaylist
+    )?.name||
+    'No playlist';
 
-        document.body.style.margin = '0';
-        document.body.style.padding = '0';
-        document.body.style.background = '#050505';
-        document.body.style.color = '#ffffff';
-        document.body.style.fontFamily =
-            'Arial, Helvetica, sans-serif';
-        document.body.style.overflow = 'hidden';
+  $('categoryTitle').textContent=
+    state.selectedGroup===
+    '__fav'
+      ?'Favourites'
+      :state.selectedGroup===
+        '__all'
+          ?'All Channels'
+          :state.selectedGroup;
 
-        document.body.tabIndex = -1;
+  $('channelCount').textContent=
+    filtered.length+
+    ' channels';
 
-        var root = document.createElement('div');
+  const g=$('channelGrid');
 
-        root.id = 'remoteDiagnostic';
+  g.innerHTML='';
 
-        root.style.position = 'fixed';
-        root.style.left = '0';
-        root.style.top = '0';
-        root.style.right = '0';
-        root.style.bottom = '0';
+  filtered
+    .slice(0,180)
+    .forEach(
+      (c,i)=>{
+        const d=
+          document.createElement(
+            'div'
+          );
 
-        root.style.padding = '45px';
-        root.style.boxSizing = 'border-box';
+        d.className=
+          'channel '+
+          (
+            i===focusIndex
+              ?'focused'
+              :''
+          );
 
-        root.style.background = '#050505';
+        d.dataset.i=i;
+        d.tabIndex=0;
 
-        root.innerHTML =
-            '<div style="font-size:42px;font-weight:bold;margin-bottom:8px;">' +
-                'TIZEN REMOTE TEST' +
-            '</div>' +
+        const logo=
+          c.logo
+            ?'<img class="channel-logo" src="'+
+             esc(c.logo)+
+             '" onerror="this.style.display=\'none\'">'
+            :'<div class="channel-logo fallback">TV</div>';
 
-            '<div style="font-size:20px;color:#aaaaaa;margin-bottom:35px;">' +
-                'TizenTivi remote diagnostic' +
-            '</div>' +
+        d.innerHTML=
+          logo+
+          '<div class="channel-meta">'+
+          '<div class="channel-title">'+
+          esc(c.name)+
+          '</div>'+
+          '<div class="channel-sub">'+
+          esc(c.group)+
+          '</div>'+
+          '</div>'+
+          '<div class="star '+
+          (
+            isFav(c)
+              ?'on'
+              :''
+          )+
+          '">★</div>';
 
-            '<div id="statusBox" style="' +
-                'border:3px solid #333;' +
-                'padding:28px;' +
-                'margin-bottom:25px;' +
-                'background:#101010;' +
-            '">' +
-
-                '<div style="font-size:20px;color:#999;">LAST EVENT</div>' +
-
-                '<div id="lastKey" style="' +
-                    'font-size:48px;' +
-                    'font-weight:bold;' +
-                    'margin-top:10px;' +
-                '">' +
-                    'NONE' +
-                '</div>' +
-
-                '<div style="margin-top:25px;font-size:24px;">' +
-                    '<div>Event type: <span id="eventType">-</span></div>' +
-                    '<div>key: <span id="keyValue">-</span></div>' +
-                    '<div>keyCode: <span id="keyCodeValue">-</span></div>' +
-                    '<div>which: <span id="whichValue">-</span></div>' +
-                    '<div>Mapped name: <span id="mappedValue">-</span></div>' +
-                    '<div>Time: <span id="timeValue">-</span></div>' +
-                '</div>' +
-
-            '</div>' +
-
-            '<div style="display:flex;gap:25px;margin-bottom:25px;">' +
-
-                '<div style="flex:1;border:2px solid #333;padding:20px;background:#101010;">' +
-                    '<div style="color:#999;">KEYDOWN EVENTS</div>' +
-                    '<div id="keydownCount" style="font-size:36px;font-weight:bold;margin-top:8px;">0</div>' +
-                '</div>' +
-
-                '<div style="flex:1;border:2px solid #333;padding:20px;background:#101010;">' +
-                    '<div style="color:#999;">TIZENHWKEY EVENTS</div>' +
-                    '<div id="hardwareCount" style="font-size:36px;font-weight:bold;margin-top:8px;">0</div>' +
-                '</div>' +
-
-                '<div style="flex:1;border:2px solid #333;padding:20px;background:#101010;">' +
-                    '<div style="color:#999;">TOTAL EVENTS</div>' +
-                    '<div id="totalCount" style="font-size:36px;font-weight:bold;margin-top:8px;">0</div>' +
-                '</div>' +
-
-            '</div>' +
-
-            '<div style="' +
-                'border:2px solid #333;' +
-                'padding:25px;' +
-                'background:#101010;' +
-                'font-size:23px;' +
-                'line-height:1.7;' +
-            '">' +
-
-                '<div style="font-size:26px;font-weight:bold;margin-bottom:8px;">' +
-                    'PRESS THESE BUTTONS' +
-                '</div>' +
-
-                '<div>' +
-                    '↑ UP &nbsp;&nbsp; ↓ DOWN &nbsp;&nbsp; ← LEFT &nbsp;&nbsp; → RIGHT' +
-                '</div>' +
-
-                '<div>' +
-                    'ENTER / OK &nbsp;&nbsp; BACK' +
-                '</div>' +
-
-                '<div>' +
-                    '0 1 2 3 4 5 6 7 8 9' +
-                '</div>' +
-
-                '<div>' +
-                    'CHANNEL UP / DOWN &nbsp;&nbsp; PLAY / PAUSE' +
-                '</div>' +
-
-                '<div>' +
-                    'RED &nbsp;&nbsp; GREEN &nbsp;&nbsp; YELLOW &nbsp;&nbsp; BLUE' +
-                '</div>' +
-
-            '</div>' +
-
-            '<div id="environment" style="' +
-                'position:absolute;' +
-                'left:45px;' +
-                'right:45px;' +
-                'bottom:25px;' +
-                'font-size:17px;' +
-                'color:#888;' +
-            '"></div>';
-
-        document.body.appendChild(root);
-
-        updateEnvironment();
-    }
-
-    /*
-     * ------------------------------------------------------------
-     * ENVIRONMENT INFORMATION
-     * ------------------------------------------------------------
-     */
-
-    function updateEnvironment() {
-        var el = document.getElementById('environment');
-
-        if (!el) {
-            return;
-        }
-
-        var tizenText =
-            tizenAvailable
-                ? 'AVAILABLE'
-                : 'NOT AVAILABLE';
-
-        var tvText =
-            tvInputAvailable
-                ? 'AVAILABLE'
-                : 'NOT AVAILABLE';
-
-        el.innerHTML =
-            'Tizen API: <b>' +
-            tizenText +
-            '</b>' +
-            ' &nbsp;&nbsp; ' +
-            'TV Input Device API: <b>' +
-            tvText +
-            '</b>' +
-            ' &nbsp;&nbsp; ' +
-            'Registered keys: <b>' +
-            registeredKeys.length +
-            '</b>';
-    }
-
-    /*
-     * ------------------------------------------------------------
-     * DISPLAY EVENT
-     * ------------------------------------------------------------
-     */
-
-    function displayEvent(type, e, forcedName) {
-        eventCount++;
-
-        var code = 0;
-        var which = 0;
-        var key = '';
-
-        try {
-            code = Number(e && e.keyCode || 0);
-        } catch (err) {
-            code = 0;
-        }
-
-        try {
-            which = Number(e && e.which || 0);
-        } catch (err) {
-            which = 0;
-        }
-
-        try {
-            key = safeString(e && e.key);
-        } catch (err) {
-            key = '-';
-        }
-
-        var mapped =
-            forcedName ||
-            codeToName(code);
-
-        if (
-            mapped === '-' &&
-            key &&
-            key !== '-'
-        ) {
-            mapped = key;
-        }
-
-        lastEvent = {
-            type: type,
-            key: key,
-            keyCode: code || '-',
-            which: which || '-',
-            keyName: mapped,
-            time: nowTime()
+        d.onclick=()=>{
+          playIndex(i);
         };
 
-        var lastKey =
-            document.getElementById('lastKey');
+        d.onmouseenter=()=>{
+          setFocus(i);
+        };
 
-        var eventType =
-            document.getElementById('eventType');
+        g.appendChild(d);
+      }
+    );
+}
 
-        var keyValue =
-            document.getElementById('keyValue');
+function setFocus(i){
+  if(!filtered.length){
+    focusIndex=0;
+    return;
+  }
 
-        var keyCodeValue =
-            document.getElementById('keyCodeValue');
+  focusIndex=
+    Math.max(
+      0,
+      Math.min(
+        i,
+        filtered.length-1
+      )
+    );
 
-        var whichValue =
-            document.getElementById('whichValue');
+  [
+    ...$('channelGrid')
+      .children
+  ].forEach(
+    (x,n)=>{
+      x.classList.toggle(
+        'focused',
+        n===focusIndex
+      );
+    }
+  );
+}
 
-        var mappedValue =
-            document.getElementById('mappedValue');
+function moveChannel(delta){
+  if(!filtered.length)return;
 
-        var timeValue =
-            document.getElementById('timeValue');
+  /*
+   * Your grid is two columns.
+   */
+  const cols=2;
 
-        var totalCount =
-            document.getElementById('totalCount');
+  let n=
+    focusIndex+
+    delta;
 
-        var keydownCountEl =
-            document.getElementById('keydownCount');
+  if(n<0){
+    n=0;
+  }
 
-        var hardwareCountEl =
-            document.getElementById('hardwareCount');
+  if(
+    n>=filtered.length
+  ){
+    n=
+      filtered.length-1;
+  }
 
-        if (lastKey) {
-            lastKey.textContent =
-                mapped === '-' ?
-                    (key || 'UNKNOWN') :
-                    mapped;
-        }
+  setFocus(n);
 
-        if (eventType) {
-            eventType.textContent =
-                safeString(type);
-        }
+  const el=
+    $('channelGrid')
+      .children[
+        focusIndex
+      ];
 
-        if (keyValue) {
-            keyValue.textContent =
-                key;
-        }
+  if(
+    el&&
+    el.scrollIntoView
+  ){
+    el.scrollIntoView({
+      block:'nearest',
+      inline:'nearest'
+    });
+  }
+}
 
-        if (keyCodeValue) {
-            keyCodeValue.textContent =
-                safeString(code || '-');
-        }
+function current(){
+  return filtered[
+    focusIndex
+  ];
+}
 
-        if (whichValue) {
-            whichValue.textContent =
-                safeString(which || '-');
-        }
+function playIndex(i){
+  setFocus(i);
+  playChannel(
+    filtered[i]
+  );
+}
 
-        if (mappedValue) {
-            mappedValue.textContent =
-                mapped;
-        }
+async function playChannel(c){
+  if(!c)return;
 
-        if (timeValue) {
-            timeValue.textContent =
-                nowTime();
-        }
+  currentChannel=c;
 
-        if (totalCount) {
-            totalCount.textContent =
-                String(eventCount);
-        }
+  $('nowTitle').textContent=
+    c.name;
 
-        if (keydownCountEl) {
-            keydownCountEl.textContent =
-                String(keyDownCount);
-        }
+  $('nowProgram').textContent=
+    '';
 
-        if (hardwareCountEl) {
-            hardwareCountEl.textContent =
-                String(hardwareCount);
-        }
+  $('playerStatus').textContent=
+    'Loading…';
 
-        /*
-         * Make the border visibly flash when an event arrives.
-         */
-        var box =
-            document.getElementById('statusBox');
+  const logo=
+    $('nowLogo');
 
-        if (box) {
-            box.style.borderColor = '#ffffff';
+  logo.style.backgroundImage=
+    c.logo
+      ?'url("'+
+       c.logo.replace(
+         /"/g,
+         '\\"'
+       )+
+       '")'
+      :'none';
 
-            clearTimeout(box._flashTimer);
+  let url=c.url;
 
-            box._flashTimer =
-                setTimeout(function () {
-                    box.style.borderColor = '#333333';
-                }, 250);
-        }
+  try{
+    if(c.xtream){
+      const ext=
+        c.url
+          .split('?')[0]
+          .split('.')
+          .pop()
+          .toLowerCase();
+
+      url=c.url;
     }
 
-    /*
-     * ------------------------------------------------------------
-     * STANDARD KEYDOWN
-     * ------------------------------------------------------------
-     */
+    const v=$('video');
 
-    function onKeyDown(e) {
-        keyDownCount++;
+    v.pause();
+    v.removeAttribute(
+      'src'
+    );
+    v.load();
 
-        displayEvent(
-            'keydown',
-            e
+    if(
+      c.ua&&
+      v.setAttribute
+    ){
+      /*
+       * Retained for compatibility.
+       */
+    }
+
+    v.src=url;
+
+    await v.play();
+
+    $('playerStatus').textContent=
+      'Playing';
+
+    loadChannelEpg(c);
+
+  }catch(e){
+    $('playerStatus').textContent=
+      'Playback error';
+
+    toast(
+      'Cannot play channel: '+
+      e.message
+    );
+  }
+}
+
+function stop(){
+  const v=$('video');
+
+  v.pause();
+
+  v.removeAttribute(
+    'src'
+  );
+
+  v.load();
+
+  currentChannel=null;
+
+  $('playerStatus').textContent=
+    'Stopped';
+}
+
+async function loadChannelEpg(c){
+  $('epgBar')
+    .classList
+    .add('hidden');
+
+  if(c.xtream){
+    try{
+      const x=c.xtream;
+
+      const data=
+        await fetchJson(
+          xtreamUrl(
+            x.base,
+            x.user,
+            x.pass,
+            'get_short_epg',
+            'stream_id='+
+            encodeURIComponent(
+              x.id
+            )+
+            '&limit=2'
+          )
         );
 
-        /*
-         * IMPORTANT:
-         * Do NOT preventDefault here.
-         *
-         * We want to observe exactly what Samsung/Tizen
-         * is giving the application.
-         */
-    }
+      const items=
+        data.epg_list||
+        [];
 
-    /*
-     * ------------------------------------------------------------
-     * KEYUP
-     * ------------------------------------------------------------
-     */
+      if(items[0]){
+        showEpg({
+          title:
+            items[0].title,
 
-    function onKeyUp(e) {
-        displayEvent(
-            'keyup',
-            e
-        );
-    }
+          start:
+            items[0].start,
 
-    /*
-     * ------------------------------------------------------------
-     * TIZEN HARDWARE KEY
-     * ------------------------------------------------------------
-     */
+          end:
+            items[0].end,
 
-    function onTizenHardwareKey(e) {
-        hardwareCount++;
-
-        var name =
-            e &&
-            e.keyName
-                ? String(e.keyName)
-                : '-';
-
-        displayEvent(
-            'tizenhwkey',
-            e || {},
-            name
-        );
-    }
-
-    /*
-     * ------------------------------------------------------------
-     * TIZEN API CHECK
-     * ------------------------------------------------------------
-     */
-
-    function inspectTizen() {
-        try {
-            tizenAvailable =
-                typeof window.tizen !== 'undefined';
-
-            tvInputAvailable =
-                tizenAvailable &&
-                typeof tizen.tvinputdevice !== 'undefined';
-
-        } catch (e) {
-            tizenAvailable = false;
-            tvInputAvailable = false;
-        }
-
-        updateEnvironment();
-    }
-
-    /*
-     * ------------------------------------------------------------
-     * DISCOVER TIZEN REMOTE KEYS
-     * ------------------------------------------------------------
-     */
-
-    function inspectKeys() {
-        if (!tvInputAvailable) {
-            return;
-        }
-
-        var names = [
-            'MediaPlay',
-            'MediaPause',
-            'MediaPlayPause',
-            'MediaStop',
-            'MediaFastForward',
-            'MediaRewind',
-            'MediaTrackPrevious',
-            'MediaTrackNext',
-            'ChannelUp',
-            'ChannelDown',
-            'ColorF0Red',
-            'ColorF1Green',
-            'ColorF2Yellow',
-            'ColorF3Blue',
-            'Menu',
-            'Info',
-            'Guide',
-            'Search'
-        ];
-
-        names.forEach(function (name) {
-            try {
-                if (
-                    tizen.tvinputdevice.getKey
-                ) {
-                    var key =
-                        tizen.tvinputdevice.getKey(
-                            name
-                        );
-
-                    if (key) {
-                        registeredKeys.push(
-                            name +
-                            ':' +
-                            safeString(key.code)
-                        );
-                    }
-                }
-            } catch (e) {
-                /*
-                 * Some keys may not be available on
-                 * a particular Samsung TV.
-                 */
-            }
+          desc:
+            items[0].description
         });
+      }
 
-        updateEnvironment();
+      return;
+
+    }catch(e){}
+  }
+
+  const id=
+    c.tvgId||
+    c.tvgName;
+
+  if(
+    id&&
+    epg.byId[id]&&
+    epg.byId[id][0]
+  ){
+    showEpg(
+      epg.byId[id][0]
+    );
+  }
+}
+
+function showEpg(p){
+  $('epgTitle').textContent=
+    p.title||
+    'Programme';
+
+  $('epgTimes').textContent=
+    (p.start||'')+
+    (
+      p.end
+        ?' – '+p.end
+        :''
+    );
+
+  $('epgDesc').textContent=
+    p.desc||
+    '';
+
+  $('epgBar')
+    .classList
+    .remove('hidden');
+}
+
+function parseXmltv(text){
+  const xml=
+    new DOMParser()
+      .parseFromString(
+        text,
+        'application/xml'
+      );
+
+  const out={};
+
+  [
+    ...xml.querySelectorAll(
+      'programme'
+    )
+  ].forEach(
+    n=>{
+      const id=
+        n.getAttribute(
+          'channel'
+        )||
+        '';
+
+      if(!id)return;
+
+      const title=
+        n.querySelector(
+          'title'
+        )?.textContent||
+        '';
+
+      const desc=
+        n.querySelector(
+          'desc'
+        )?.textContent||
+        '';
+
+      const start=
+        n.getAttribute(
+          'start'
+        )||
+        '';
+
+      const end=
+        n.getAttribute(
+          'stop'
+        )||
+        '';
+
+      const p={
+        title,
+        start:
+          fmtXmlDate(start),
+        end:
+          fmtXmlDate(end),
+        desc
+      };
+
+      (
+        out[id]||
+        (out[id]=[])
+      ).push(p);
+    }
+  );
+
+  return out;
+}
+
+function fmtXmlDate(s){
+  if(!s)return '';
+
+  const m=
+    s.match(
+      /^(\d{4})(\d\d)(\d\d)(\d\d)(\d\d)(\d\d)?/
+    );
+
+  return m
+    ?m[3]+'/'+
+     m[2]+' '+
+     m[4]+':'+
+     m[5]
+    :s;
+}
+
+async function refreshEpg(quiet){
+  const p=
+    state.playlists.find(
+      function(x){
+        return x.id===
+          state.selectedPlaylist;
+      }
+    );
+
+  if(!p)return;
+
+  let url=p.epgUrl;
+
+  if(
+    !url&&
+    p.type==='m3u'&&
+    p.lastEpgUrl
+  ){
+    url=p.lastEpgUrl;
+  }
+
+  if(!url){
+    if(!quiet){
+      toast(
+        'No EPG URL configured'
+      );
     }
 
-    /*
-     * ------------------------------------------------------------
-     * DO NOT REGISTER THE MANDATORY KEYS
-     * ------------------------------------------------------------
-     *
-     * We intentionally do NOT register:
-     *
-     * ArrowLeft
-     * ArrowRight
-     * ArrowUp
-     * ArrowDown
-     * Enter
-     * Back
-     *
-     * Samsung handles those automatically.
-     *
-     * We only attempt to register the extra media keys.
-     * TizenBrew should already be doing this through
-     * package.json, so failure here is harmless.
-     */
+    return;
+  }
 
-    function registerExtraKeys() {
-        if (!tvInputAvailable) {
-            return;
-        }
+  try{
+    epg.byId=
+      parseXmltv(
+        await fetchText(url)
+      );
 
-        if (
-            !tizen.tvinputdevice.registerKey
-        ) {
-            return;
-        }
+    epg.last=
+      Date.now();
 
-        var keys = [
-            'MediaPlay',
-            'MediaPause',
-            'MediaPlayPause',
-            'MediaStop',
-            'MediaFastForward',
-            'MediaRewind',
-            'MediaTrackPrevious',
-            'MediaTrackNext'
-        ];
+    if(!quiet){
+      toast(
+        'EPG refreshed'
+      );
+    }
 
-        keys.forEach(function (name) {
-            try {
-                tizen.tvinputdevice.registerKey(
-                    name
-                );
-            } catch (e) {
-                /*
-                 * Ignore registration errors.
-                 *
-                 * TizenBrew may have already registered
-                 * these keys.
-                 */
+    if(currentChannel){
+      loadChannelEpg(
+        currentChannel
+      );
+    }
+
+  }catch(e){
+    if(!quiet){
+      toast(
+        'EPG refresh failed: '+
+        e.message
+      );
+    }
+  }
+}
+
+function schedule(){
+  clearInterval(
+    refreshTimer
+  );
+
+  clearInterval(
+    epgTimer
+  );
+
+  const p=
+    state.playlists.find(
+      function(x){
+        return x.id===
+          state.selectedPlaylist;
+      }
+    );
+
+  if(!p)return;
+
+  const mins=
+    Number(
+      p.refreshMinutes||
+      state.autoPlaylistRefresh||
+      0
+    );
+
+  if(mins>0){
+    refreshTimer=
+      setInterval(
+        ()=>{
+          refreshPlaylist(
+            p,
+            true
+          );
+        },
+        mins*60000
+      );
+  }
+
+  const emins=
+    Number(
+      p.epgRefreshMinutes||
+      state.autoEpgRefresh||
+      0
+    );
+
+  if(emins>0){
+    epgTimer=
+      setInterval(
+        ()=>{
+          refreshEpg(
+            true
+          );
+        },
+        emins*60000
+      );
+  }
+}
+
+function openModal(
+  title,
+  body,
+  actions=''
+){
+  const r=$('modalRoot');
+
+  r.classList.remove(
+    'hidden'
+  );
+
+  r.innerHTML=
+    '<div class="modal">'+
+    '<h2>'+
+    title+
+    '</h2>'+
+    body+
+    '<div class="modal-actions">'+
+    actions+
+    '</div>'+
+    '</div>';
+
+  r.querySelectorAll(
+    'button,input,select'
+  ).forEach(
+    x=>{
+      x.tabIndex=0;
+    }
+  );
+}
+
+function closeModal(){
+  $('modalRoot')
+    .classList
+    .add('hidden');
+
+  $('modalRoot').innerHTML='';
+
+  /*
+   * Critical for Samsung remote navigation:
+   * after a modal closes, return focus to the
+   * actual remote navigation target.
+   */
+  setTimeout(
+    restoreRemoteFocus,
+    0
+  );
+}
+
+function settingsModal(){
+  let rows=
+    '<div class="form-row">'+
+    '<label>Saved playlists</label>'+
+    '<div id="plistRows">';
+
+  state.playlists.forEach(
+    p=>{
+      rows+=
+        '<div class="list-row">'+
+        '<div class="grow">'+
+        '<b>'+
+        esc(p.name)+
+        '</b>'+
+        '<div class="muted">'+
+        esc(
+          p.type==='xtream'
+            ?p.server
+            :p.url
+        )+
+        '</div>'+
+        '</div>'+
+        '<button class="btn" data-edit="'+
+        p.id+
+        '">Edit</button>'+
+        '<button class="btn danger" data-del="'+
+        p.id+
+        '">Delete</button>'+
+        '</div>';
+    }
+  );
+
+  rows+=
+    '</div></div>'+
+    '<div class="form-row">'+
+    '<label>Global automatic refresh minutes (0 = off)</label>'+
+    '<input id="autoRefresh" class="input" type="number" min="0" value="'+
+    Number(
+      state.autoPlaylistRefresh||
+      0
+    )+
+    '">'+
+    '</div>'+
+    '<div class="form-row">'+
+    '<label>Global EPG refresh minutes (0 = off)</label>'+
+    '<input id="autoEpg" class="input" type="number" min="0" value="'+
+    Number(
+      state.autoEpgRefresh||
+      0
+    )+
+    '">'+
+    '</div>';
+
+  openModal(
+    'Settings',
+    rows,
+    '<button class="btn" id="addPlaylist">Add playlist</button>'+
+    '<button class="btn" id="refreshNow">Refresh now</button>'+
+    '<button class="btn primary" id="closeSettings">Done</button>'
+  );
+
+  $('addPlaylist').onclick=
+    ()=>{
+      playlistModal();
+    };
+
+  $('refreshNow').onclick=
+    async()=>{
+      const p=
+        state.playlists.find(
+          function(x){
+            return x.id===
+              state.selectedPlaylist;
+          }
+        );
+
+      await refreshPlaylist(p);
+      await refreshEpg();
+      schedule();
+    };
+
+  $('closeSettings').onclick=
+    ()=>{
+      state.autoPlaylistRefresh=
+        Number(
+          $('autoRefresh').value
+        )||0;
+
+      state.autoEpgRefresh=
+        Number(
+          $('autoEpg').value
+        )||0;
+
+      save();
+      schedule();
+      closeModal();
+    };
+
+  $('modalRoot')
+    .querySelectorAll(
+      '[data-del]'
+    )
+    .forEach(
+      b=>{
+        b.onclick=
+          ()=>{
+            const id=
+              b.dataset.del;
+
+            state.playlists=
+              state.playlists.filter(
+                p=>p.id!==id
+              );
+
+            if(
+              state.selectedPlaylist===
+              id
+            ){
+              state.selectedPlaylist=
+                state.playlists[0]?.id||
+                null;
             }
-        });
-    }
 
-    /*
-     * ------------------------------------------------------------
-     * INSTALL LISTENERS
-     * ------------------------------------------------------------
-     */
+            save();
+            closeModal();
+            init();
+          };
+      }
+    );
 
-    function installListeners() {
+  $('modalRoot')
+    .querySelectorAll(
+      '[data-edit]'
+    )
+    .forEach(
+      b=>{
+        b.onclick=
+          ()=>playlistModal(
+            state.playlists.find(
+              p=>
+                p.id===
+                b.dataset.edit
+            )
+          );
+      }
+    );
+}
 
-        /*
-         * Capture phase.
-         */
-        document.addEventListener(
-            'keydown',
-            onKeyDown,
-            true
+function playlistModal(p){
+  const x=
+    p||
+    {
+      id:'p'+Date.now(),
+      name:'My Playlist',
+      type:'xtream',
+      server:'',
+      username:'',
+      password:'',
+      url:'',
+      epgUrl:'',
+      refreshMinutes:360,
+      epgRefreshMinutes:360
+    };
+
+  const body=
+    '<div class="form-row">'+
+    '<label>Name</label>'+
+    '<input id="pn" class="input" value="'+
+    esc(x.name)+
+    '">'+
+    '</div>'+
+
+    '<div class="form-row">'+
+    '<label>Type</label>'+
+    '<select id="pt" class="select">'+
+    '<option value="xtream" '+
+    (
+      x.type==='xtream'
+        ?'selected'
+        :''
+    )+
+    '>Xtream Codes</option>'+
+    '<option value="m3u" '+
+    (
+      x.type==='m3u'
+        ?'selected'
+        :''
+    )+
+    '>M3U / M3U8 URL</option>'+
+    '</select>'+
+    '</div>'+
+
+    '<div id="xtFields">'+
+    '<div class="form-row">'+
+    '<label>Server URL</label>'+
+    '<input id="server" class="input" placeholder="https://example.com:8080" value="'+
+    esc(x.server)+
+    '">'+
+    '</div>'+
+    '<div class="form-row">'+
+    '<label>Username</label>'+
+    '<input id="user" class="input" value="'+
+    esc(x.username)+
+    '">'+
+    '</div>'+
+    '<div class="form-row">'+
+    '<label>Password</label>'+
+    '<input id="pass" class="input" type="password" value="'+
+    esc(x.password)+
+    '">'+
+    '</div>'+
+    '</div>'+
+
+    '<div id="m3uFields">'+
+    '<div class="form-row">'+
+    '<label>M3U / M3U8 URL</label>'+
+    '<input id="url" class="input" value="'+
+    esc(x.url)+
+    '">'+
+    '</div>'+
+    '</div>'+
+
+    '<div class="form-row">'+
+    '<label>XMLTV EPG URL (optional)</label>'+
+    '<input id="epg" class="input" value="'+
+    esc(x.epgUrl)+
+    '">'+
+    '</div>'+
+
+    '<div class="form-row">'+
+    '<label>Playlist auto-refresh minutes (0 = off)</label>'+
+    '<input id="rm" class="input" type="number" min="0" value="'+
+    Number(
+      x.refreshMinutes||
+      0
+    )+
+    '">'+
+    '</div>'+
+
+    '<div class="form-row">'+
+    '<label>EPG auto-refresh minutes (0 = off)</label>'+
+    '<input id="erm" class="input" type="number" min="0" value="'+
+    Number(
+      x.epgRefreshMinutes||
+      0
+    )+
+    '">'+
+    '</div>';
+
+  openModal(
+    p
+      ?'Edit playlist'
+      :'Add playlist',
+    body,
+    '<button class="btn" id="cancelP">Cancel</button>'+
+    '<button class="btn primary" id="saveP">Save & Load</button>'
+  );
+
+  function toggle(){
+    const is=
+      $('pt').value===
+      'xtream';
+
+    $('xtFields')
+      .style
+      .display=
+        is
+          ?'block'
+          :'none';
+
+    $('m3uFields')
+      .style
+      .display=
+        is
+          ?'none'
+          :'block';
+  }
+
+  $('pt').onchange=
+    toggle;
+
+  toggle();
+
+  $('cancelP').onclick=
+    closeModal;
+
+  $('saveP').onclick=
+    async()=>{
+      x.name=
+        $('pn').value.trim()||
+        'Playlist';
+
+      x.type=
+        $('pt').value;
+
+      x.server=
+        $('server')
+          ?$('server').value.trim()
+          :'';
+
+      x.username=
+        $('user')
+          ?$('user').value.trim()
+          :'';
+
+      x.password=
+        $('pass')
+          ?$('pass').value
+          :'';
+
+      x.url=
+        $('url')
+          ?$('url').value.trim()
+          :'';
+
+      x.epgUrl=
+        $('epg').value.trim();
+
+      x.refreshMinutes=
+        Number(
+          $('rm').value
+        )||0;
+
+      x.epgRefreshMinutes=
+        Number(
+          $('erm').value
+        )||0;
+
+      const i=
+        state.playlists.findIndex(
+          q=>q.id===x.id
         );
 
-        document.addEventListener(
-            'keyup',
-            onKeyUp,
-            true
-        );
+      if(i>=0){
+        state.playlists[i]=x;
+      }else{
+        state.playlists.push(x);
+      }
 
-        /*
-         * Tizen-specific hardware key event.
-         */
-        document.addEventListener(
-            'tizenhwkey',
-            onTizenHardwareKey,
-            true
-        );
+      state.selectedPlaylist=
+        x.id;
 
-        /*
-         * Window-level backup.
-         */
-        window.addEventListener(
-            'keydown',
-            onKeyDown,
-            true
-        );
+      save();
+      closeModal();
 
-        window.addEventListener(
-            'keyup',
-            onKeyUp,
-            true
-        );
+      await init();
+    };
+}
 
-        window.addEventListener(
-            'tizenhwkey',
-            onTizenHardwareKey,
-            true
-        );
+function searchModal(){
+  const body=
+    '<div class="form-row">'+
+    '<label>Search channels</label>'+
+    '<input id="searchInput" class="input" autofocus placeholder="Type channel name...">'+
+    '</div>'+
+    '<div id="searchList" class="search-list"></div>';
 
-        /*
-         * Body-level backup.
-         */
-        if (document.body) {
+  openModal(
+    'Search',
+    body,
+    '<button class="btn primary" id="closeSearch">Close</button>'
+  );
 
-            document.body.addEventListener(
-                'keydown',
-                onKeyDown,
-                true
-            );
+  $('closeSearch').onclick=
+    closeModal;
 
-            document.body.addEventListener(
-                'keyup',
-                onKeyUp,
-                true
-            );
+  const input=
+    $('searchInput');
 
-            document.body.addEventListener(
-                'tizenhwkey',
-                onTizenHardwareKey,
-                true
-            );
-        }
+  input.oninput=
+    ()=>{
+      searchResults=
+        channels
+          .filter(
+            c=>
+              c.name
+                .toLowerCase()
+                .includes(
+                  input.value
+                    .toLowerCase()
+                )
+          )
+          .slice(
+            0,
+            80
+          );
 
-        /*
-         * Give the document a focus target.
-         */
-        try {
-            document.body.tabIndex = -1;
-            document.body.focus();
-        } catch (e) {}
-    }
+      $('searchList').innerHTML=
+        searchResults
+          .map(
+            (c,i)=>
+              '<div class="search-result" data-s="'+
+              i+
+              '">'+
+              esc(c.name)+
+              ' <span class="muted">· '+
+              esc(c.group)+
+              '</span></div>'
+          )
+          .join('');
 
-    /*
-     * ------------------------------------------------------------
-     * START
-     * ------------------------------------------------------------
-     */
+      $('searchList')
+        .querySelectorAll(
+          '[data-s]'
+        )
+        .forEach(
+          el=>{
+            el.onclick=
+              ()=>{
+                const c=
+                  searchResults[
+                    Number(
+                      el.dataset.s
+                    )
+                  ];
 
-    function start() {
+                const idx=
+                  filtered.indexOf(c);
 
-        /*
-         * Build the diagnostic screen FIRST.
-         */
-        createScreen();
+                closeModal();
 
-        /*
-         * Check Tizen.
-         */
-        inspectTizen();
-
-        /*
-         * Install listeners.
-         */
-        installListeners();
-
-        /*
-         * Give Tizen a moment to initialise.
-         */
-        setTimeout(
-            function () {
-                inspectTizen();
-                inspectKeys();
-                registerExtraKeys();
-            },
-            500
-        );
-
-        /*
-         * Also show a startup event so we know the
-         * JavaScript itself is running.
-         */
-        setTimeout(
-            function () {
-
-                var el =
-                    document.getElementById(
-                        'lastKey'
-                    );
-
-                if (el) {
-                    el.textContent =
-                        'READY — PRESS A BUTTON';
+                if(idx>=0){
+                  playIndex(idx);
+                }else{
+                  playChannel(c);
                 }
-
-            },
-            1000
+              };
+          }
         );
+    };
+
+  input.focus();
+}
+
+
+/* ============================================================
+   SAMSUNG / TIZEN REMOTE LAYER
+   ============================================================ */
+
+const REMOTE_CODES={
+  Enter:13,
+
+  ArrowLeft:37,
+  ArrowUp:38,
+  ArrowRight:39,
+  ArrowDown:40,
+
+  Back:10009,
+  Escape:27,
+
+  MediaPlay:415,
+  MediaPause:19,
+  MediaPlayPause:10252,
+  MediaStop:413,
+
+  MediaRewind:412,
+  MediaFastForward:417,
+
+  MediaTrackPrevious:10232,
+  MediaTrackNext:10233,
+
+  ColorF0Red:403,
+  ColorF1Green:404,
+  ColorF2Yellow:405,
+  ColorF3Blue:406,
+
+  Menu:18,
+  Info:457,
+  Source:10072,
+  Guide:458,
+  Search:10225
+};
+
+function keyName(e){
+  if(!e)return '';
+
+  const code=
+    Number(
+      e.keyCode||
+      e.which||
+      0
+    );
+
+  if(
+    REMOTE_CODES.Enter===code
+  ){
+    return 'Enter';
+  }
+
+  for(
+    const name in REMOTE_CODES
+  ){
+    if(
+      REMOTE_CODES[name]===
+      code
+    ){
+      return name;
     }
+  }
+
+  if(e.key){
+    if(
+      e.key==='Return'
+    ){
+      return 'Back';
+    }
+
+    if(
+      e.key==='Escape'
+    ){
+      return 'Escape';
+    }
+
+    return String(
+      e.key
+    );
+  }
+
+  return '';
+}
+
+function preventRemoteDefault(e){
+  if(!e)return;
+
+  try{
+    if(e.preventDefault){
+      e.preventDefault();
+    }
+  }catch(err){}
+
+  try{
+    if(e.stopImmediatePropagation){
+      e.stopImmediatePropagation();
+    }else if(
+      e.stopPropagation
+    ){
+      e.stopPropagation();
+    }
+  }catch(err){}
+}
+
+function duplicateRemote(k){
+  const now=
+    Date.now();
+
+  if(
+    k===
+      lastRemoteKey&&
+    now-lastRemoteTime<
+      75
+  ){
+    return true;
+  }
+
+  lastRemoteKey=k;
+  lastRemoteTime=now;
+
+  return false;
+}
+
+function focusSidebar(){
+  const els=
+    $('sidebar').children;
+
+  [
+    ...els
+  ].forEach(
+    (x,i)=>{
+      x.classList.toggle(
+        'remote-focused',
+        i===sidebarIndex
+      );
+    }
+  );
+
+  if(
+    els[sidebarIndex]&&
+    els[sidebarIndex]
+      .scrollIntoView
+  ){
+    els[sidebarIndex]
+      .scrollIntoView({
+        block:'nearest'
+      });
+  }
+
+  try{
+    if(
+      els[sidebarIndex]&&
+      els[sidebarIndex].focus
+    ){
+      els[sidebarIndex]
+        .focus();
+    }
+  }catch(e){}
+}
+
+function focusChannel(){
+  const el=
+    $('channelGrid')&&
+    $('channelGrid')
+      .children[
+        focusIndex
+      ];
+
+  if(
+    el&&
+    el.focus
+  ){
+    try{
+      el.focus();
+    }catch(e){}
+  }
+
+  if(
+    el&&
+    el.scrollIntoView
+  ){
+    try{
+      el.scrollIntoView({
+        block:'nearest',
+        inline:'nearest'
+      });
+    }catch(e){}
+  }
+}
+
+function restoreRemoteFocus(){
+  if(
+    $('modalRoot')&&
+    !$('modalRoot')
+      .classList
+      .contains('hidden')
+  ){
+    return;
+  }
+
+  if(sidebarOpen){
+    focusSidebar();
+  }else{
+    focusChannel();
+  }
+}
+
+function openSidebar(){
+  sidebarOpen=true;
+
+  $('sidebar')
+    .style
+    .display='block';
+
+  restoreRemoteFocus();
+}
+
+function closeSidebar(){
+  sidebarOpen=false;
+
+  $('sidebar')
+    .style
+    .display='none';
+
+  focusChannel();
+}
+
+function toggleSidebar(){
+  if(sidebarOpen){
+    closeSidebar();
+  }else{
+    openSidebar();
+  }
+}
+
+function handleKey(e){
+  const k=
+    keyName(e);
+
+  if(!k)return;
+
+  /*
+   * Avoid processing a single physical button twice.
+   */
+  if(
+    duplicateRemote(k)
+  ){
+    preventRemoteDefault(e);
+    return;
+  }
+
+  /*
+   * Modal open.
+   */
+  if(
+    $('modalRoot')&&
+    !$('modalRoot')
+      .classList
+      .contains('hidden')
+  ){
+    if(
+      k==='Escape'||
+      k==='Back'
+    ){
+      closeModal();
+      preventRemoteDefault(e);
+    }
+
+    return;
+  }
+
+  /*
+   * BACK
+   */
+  if(
+    k==='Back'||
+    k==='Escape'
+  ){
+    toggleSidebar();
+
+    preventRemoteDefault(e);
+    return;
+  }
+
+  /*
+   * LEFT
+   */
+  if(
+    k==='ArrowLeft'
+  ){
+    if(!sidebarOpen){
+      openSidebar();
+    }else{
+      sidebarIndex=
+        Math.max(
+          0,
+          sidebarIndex
+        );
+
+      focusSidebar();
+    }
+
+    preventRemoteDefault(e);
+    return;
+  }
+
+  /*
+   * RIGHT
+   */
+  if(
+    k==='ArrowRight'
+  ){
+    if(sidebarOpen){
+      closeSidebar();
+    }else{
+      /*
+       * Move one card right.
+       */
+      moveChannel(1);
+      focusChannel();
+    }
+
+    preventRemoteDefault(e);
+    return;
+  }
+
+  /*
+   * UP
+   */
+  if(
+    k==='ArrowUp'
+  ){
+    if(sidebarOpen){
+      sidebarIndex=
+        Math.max(
+          0,
+          sidebarIndex-1
+        );
+
+      focusSidebar();
+    }else{
+      /*
+       * Two columns.
+       */
+      moveChannel(-2);
+      focusChannel();
+    }
+
+    preventRemoteDefault(e);
+    return;
+  }
+
+  /*
+   * DOWN
+   */
+  if(
+    k==='ArrowDown'
+  ){
+    if(sidebarOpen){
+      sidebarIndex=
+        Math.min(
+          Math.max(
+            0,
+            $('sidebar')
+              .children
+              .length-1
+          ),
+          sidebarIndex+1
+        );
+
+      focusSidebar();
+    }else{
+      /*
+       * Two columns.
+       */
+      moveChannel(2);
+      focusChannel();
+    }
+
+    preventRemoteDefault(e);
+    return;
+  }
+
+  /*
+   * ENTER / OK
+   */
+  if(
+    k==='Enter'
+  ){
+    if(sidebarOpen){
+      const el=
+        $('sidebar')
+          .children[
+            sidebarIndex
+          ];
+
+      if(el){
+        el.click();
+      }
+    }else{
+      const c=
+        current();
+
+      if(c){
+        playChannel(c);
+      }
+    }
+
+    preventRemoteDefault(e);
+    return;
+  }
+
+  /*
+   * PLAY / PAUSE
+   */
+  if(
+    k==='MediaPlayPause'
+  ){
+    const v=
+      $('video');
+
+    if(v.paused){
+      v.play()
+        .catch(
+          function(){}
+        );
+    }else{
+      v.pause();
+    }
+
+    preventRemoteDefault(e);
+    return;
+  }
+
+  /*
+   * PLAY
+   */
+  if(
+    k==='MediaPlay'
+  ){
+    $('video')
+      .play()
+      .catch(
+        function(){}
+      );
+
+    preventRemoteDefault(e);
+    return;
+  }
+
+  /*
+   * PAUSE
+   */
+  if(
+    k==='MediaPause'
+  ){
+    $('video').pause();
+
+    preventRemoteDefault(e);
+    return;
+  }
+
+  /*
+   * STOP
+   */
+  if(
+    k==='MediaStop'
+  ){
+    stop();
+
+    preventRemoteDefault(e);
+    return;
+  }
+
+  /*
+   * REWIND
+   */
+  if(
+    k==='MediaRewind'
+  ){
+    try{
+      $('video').currentTime=
+        Math.max(
+          0,
+          $('video').currentTime-10
+        );
+    }catch(err){}
+
+    preventRemoteDefault(e);
+    return;
+  }
+
+  /*
+   * FAST FORWARD
+   */
+  if(
+    k==='MediaFastForward'
+  ){
+    try{
+      $('video').currentTime+=10;
+    }catch(err){}
+
+    preventRemoteDefault(e);
+    return;
+  }
+
+  /*
+   * PREVIOUS
+   */
+  if(
+    k==='MediaTrackPrevious'
+  ){
+    moveChannel(-1);
+    focusChannel();
+    playChannel(
+      current()
+    );
+
+    preventRemoteDefault(e);
+    return;
+  }
+
+  /*
+   * NEXT
+   */
+  if(
+    k==='MediaTrackNext'
+  ){
+    moveChannel(1);
+    focusChannel();
+    playChannel(
+      current()
+    );
+
+    preventRemoteDefault(e);
+    return;
+  }
+
+  /*
+   * RED = FAVOURITE
+   */
+  if(
+    k==='ColorF0Red'
+  ){
+    if(currentChannel){
+      toggleFav(
+        currentChannel
+      );
+    }
+
+    preventRemoteDefault(e);
+    return;
+  }
+
+  /*
+   * GREEN = SETTINGS
+   */
+  if(
+    k==='ColorF1Green'
+  ){
+    settingsModal();
+
+    preventRemoteDefault(e);
+    return;
+  }
+
+  /*
+   * YELLOW = SEARCH
+   */
+  if(
+    k==='ColorF2Yellow'
+  ){
+    searchModal();
+
+    preventRemoteDefault(e);
+    return;
+  }
+
+  /*
+   * BLUE = REFRESH
+   */
+  if(
+    k==='ColorF3Blue'
+  ){
+    refreshPlaylist(
+      state.playlists.find(
+        function(p){
+          return p.id===
+            state.selectedPlaylist;
+        }
+      )
+    );
+
+    refreshEpg();
+
+    preventRemoteDefault(e);
+    return;
+  }
+}
+
+
+/*
+ * ------------------------------------------------------------
+ * TIZEN HARDWARE BACK
+ * ------------------------------------------------------------
+ */
+
+function handleTizenHardwareKey(e){
+  if(!e)return;
+
+  const name=
+    String(
+      e.keyName||
+      ''
+    ).toLowerCase();
+
+  if(
+    name==='back'||
+    name==='return'
+  ){
+    /*
+     * Feed it through the exact same handler
+     * as the normal Back key.
+     */
+    handleKey({
+      key:'Back',
+      keyCode:10009,
+      which:10009,
+
+      preventDefault:function(){
+        try{
+          if(
+            e.preventDefault
+          ){
+            e.preventDefault();
+          }
+        }catch(err){}
+      },
+
+      stopPropagation:function(){
+        try{
+          if(
+            e.stopPropagation
+          ){
+            e.stopPropagation();
+          }
+        }catch(err){}
+      },
+
+      stopImmediatePropagation:function(){
+        try{
+          if(
+            e.stopImmediatePropagation
+          ){
+            e.stopImmediatePropagation();
+          }
+        }catch(err){}
+      }
+    });
+  }
+}
+
+
+/*
+ * ------------------------------------------------------------
+ * REMOTE LISTENERS
+ * ------------------------------------------------------------
+ *
+ * This is intentionally kept very close to the diagnostic
+ * version that proved the Samsung remote reaches the app.
+ * ------------------------------------------------------------
+ */
+
+function installRemoteLayer(){
+
+  /*
+   * Main Samsung/Tizen keyboard event.
+   *
+   * Capture phase is important.
+   */
+  document.addEventListener(
+    'keydown',
+    handleKey,
+    true
+  );
+
+  /*
+   * Tizen hardware Back.
+   */
+  document.addEventListener(
+    'tizenhwkey',
+    handleTizenHardwareKey,
+    true
+  );
+
+  /*
+   * Make the document itself focusable.
+   */
+  try{
+    document.body.tabIndex=-1;
+    document.body.focus();
+  }catch(e){}
+}
+
+
+/*
+ * ------------------------------------------------------------
+ * UI
+ * ------------------------------------------------------------
+ */
+
+$('settingsBtn').onclick=
+  settingsModal;
+
+$('searchBtn').onclick=
+  searchModal;
+
+$('settingsBtn').tabIndex=0;
+$('searchBtn').tabIndex=0;
+
+
+/*
+ * ------------------------------------------------------------
+ * VIDEO
+ * ------------------------------------------------------------
+ */
+
+$('video').addEventListener(
+  'error',
+  ()=>{
+    $('playerStatus')
+      .textContent=
+      'Stream error';
+
+    toast(
+      'The stream could not be decoded or is unavailable'
+    );
+  }
+);
+
+$('video').addEventListener(
+  'playing',
+  ()=>{
+    $('playerStatus')
+      .textContent=
+      'Playing';
+  }
+);
+
+$('video').addEventListener(
+  'waiting',
+  ()=>{
+    $('playerStatus')
+      .textContent=
+      'Buffering…';
+  }
+);
+
+
+/*
+ * ------------------------------------------------------------
+ * INIT
+ * ------------------------------------------------------------
+ */
+
+installRemoteLayer();
+
+async function init(){
+  const p=
+    state.playlists.find(
+      function(x){
+        return x.id===
+          state.selectedPlaylist;
+      }
+    );
+
+  if(!p){
+    render();
+
+    toast(
+      'Add an Xtream or M3U playlist in Settings'
+    );
 
     /*
-     * Wait for DOM if necessary.
+     * Still put remote focus somewhere useful.
      */
-    if (
-        document.readyState ===
-        'loading'
-    ) {
-        document.addEventListener(
-            'DOMContentLoaded',
-            start,
-            false
-        );
-    } else {
-        start();
-    }
+    setTimeout(
+      restoreRemoteFocus,
+      100
+    );
+
+    return;
+  }
+
+  await refreshPlaylist(
+    p,
+    true
+  );
+
+  await refreshEpg(
+    true
+  );
+
+  schedule();
+
+  setTimeout(
+    restoreRemoteFocus,
+    100
+  );
+}
+
+init();
 
 })();
